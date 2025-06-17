@@ -24,7 +24,6 @@ def analyze():
     i = 0
     while i < len(raw_lines):
         line = raw_lines[i]
-        # detect next line as qty x unit total
         if i + 1 < len(raw_lines) and re.match(r"^\d+\s*x\s*[\d,]+\s+[\d,]+", raw_lines[i+1]):
             combined.append(f"{line} {raw_lines[i+1]}")
             i += 2
@@ -34,7 +33,6 @@ def analyze():
     # 2) Parsen
     items = []
     detected_sum = None
-    # pattern: desc + optional qty x unit + optional total
     pat = re.compile(r"^(.+?)\s+(?:(\d+)\s*x\s*)?([\d,]+)(?:\s+([\d,]+))?\s*(?:€|A)?$")
     for line in combined:
         if line.upper().startswith('SUMME'):
@@ -49,11 +47,9 @@ def analyze():
         qty = int(m.group(2)) if m.group(2) else 1
         num1 = float(m.group(3).replace(',', '.'))
         if m.group(4):
-            unit_price = num1
             total_price = float(m.group(4).replace(',', '.'))
         else:
             total_price = num1
-            unit_price = total_price / qty
         items.append({
             "Position": desc,
             "Menge": qty,
@@ -84,47 +80,47 @@ if 'df' in st.session_state:
         cols[1].write("**Preis**")
         for idx, n in enumerate(names):
             cols[2+idx].write(f"**{n}**")
+        # Map: group tuple -> {'total': sum, 'items': [desc,...]}
         group_map = {}
         for i, row in df.iterrows():
             cols = st.columns(2 + len(names))
             cols[0].write(row['Position'])
             cols[1].write(f"{row['Gesamtpreis (€)']:.2f} €")
+            # Selection checkboxes
+            selected_names = []
             for idx, n in enumerate(names):
                 key = f"sel_{i}_{n}"
-                cols[2+idx].checkbox(label=n, key=key)
-            sel_group = tuple(sorted([n for n in names if st.session_state.get(f"sel_{i}_{n}", False)]))
-            if sel_group:
-                group_map.setdefault(sel_group, 0)
-                group_map[sel_group] += row['Gesamtpreis (€)']
+                val = cols[2+idx].checkbox(label=n, key=key)
+                if val:
+                    selected_names.append(n)
+            # Accumulate in group_map
+            if selected_names:
+                grp = tuple(sorted(selected_names))
+                if grp not in group_map:
+                    group_map[grp] = {'total': 0.0, 'items': []}
+                group_map[grp]['total'] += row['Gesamtpreis (€)']
+                group_map[grp]['items'].append(row['Position'])
+        # Pakete für Splitwise mit Items in Klammern
         st.write("#### Pakete für Splitwise")
-        for grp, tot in group_map.items():
+        for grp, data in group_map.items():
             people = ' '.join(grp)
-            st.write(f"{tot:.2f} € an {people}")
-        # optional: Summe prüfen
+            total = data['total']
+            items_str = ', '.join(data['items'])
+            st.write(f"{total:.2f} € an {people} ({items_str})")
+        # Zusammenfassung pro Person
+        st.write("#### Zusammenfassung pro Person")
+        sums = {n: 0.0 for n in names}
+        for grp, data in group_map.items():
+            share = data['total'] / len(grp)
+            for n in grp:
+                sums[n] += share
+        summary = pd.DataFrame([(n, round(s, 2)) for n, s in sums.items()], columns=["Name", "Betrag (€)"])
+        st.dataframe(summary)
+        # Summe prüfen
         if detected_sum is not None:
             calc = df['Gesamtpreis (€)'].sum().round(2)
             if abs(calc - detected_sum) > 0.01:
                 st.warning(f"Berechnete Summe {calc} € stimmt nicht mit Rechnungssumme {detected_sum} € überein.")
             else:
-                st.success(f"Berechnete Summe {calc} € stimmt mit Rechnungssumme überein.")
-# Anleitung
-st.markdown("---")
-st.markdown(
-"""
-**Anleitung:**
-1. Speichere als `wg_rechnung_splitter.py`.
-2. Erstelle `requirements.txt` mit:
-```
-streamlit
-pandas
-```
-3. Installiere:
-```
-pip install -r requirements.txt
-```
-4. Starte:
-```
-streamlit run wg_rechnung_splitter.py
-```
-"""
-)
+                st.success("Rechnungs-Summe stimmt.")
+
